@@ -13,7 +13,13 @@ add_definitions(${PCL_DEFINITIONS})
 
 include_directories(${CMAKE_HOME_DIRECTORY}/include)
 
-set(SOURCE_FILES src/main.cpp src/AsusXtionImageProducer.cpp include/AsusXtionImageProducer.h src/AsusXtionImageProducer.cpp include/AsusXtionImageProducer.h)
+set(SOURCE_FILES src/main.cpp
+        src/AsusXtionImageProducer.cpp
+        include/AsusXtionImageProducer.h
+        src/AsusXtionImageProducer.cpp
+        include/AsusXtionImageProducer.h
+        src/CameraIntrinsicsLoader.cpp
+        include/CameraIntrinsicsLoader.hpp)
 
 add_executable(asus_xtion_stereo_calibration ${SOURCE_FILES})
 
