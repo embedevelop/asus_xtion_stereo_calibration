@@ -54,8 +54,10 @@ enum Pattern {
 static double computeReprojectionErrors(
         const vector<vector<Point3f> > &objectPoints,
         const vector<vector<Point2f> > &imagePoints,
-        const vector<Mat> &rvecs, const vector<Mat> &tvecs,
-        const Mat &cameraMatrix, const Mat &distCoeffs,
+        const vector<Mat> &rvecs,
+        const vector<Mat> &tvecs,
+        const Mat &cameraMatrix,
+        const Mat &distCoeffs,
         vector<float> &perViewErrors) {
     vector<Point2f> imagePoints2;
     int i, totalPoints = 0;
@@ -63,8 +65,12 @@ static double computeReprojectionErrors(
     perViewErrors.resize(objectPoints.size());
 
     for (i = 0; i < (int) objectPoints.size(); i++) {
-        projectPoints(Mat(objectPoints[i]), rvecs[i], tvecs[i],
-                      cameraMatrix, distCoeffs, imagePoints2);
+        projectPoints(Mat(objectPoints[i]),
+                      rvecs[i],
+                      tvecs[i],
+                      cameraMatrix,
+                      distCoeffs,
+                      imagePoints2);
         err = norm(Mat(imagePoints[i]), Mat(imagePoints2), NORM_L2);
         int n = (int) objectPoints[i].size();
         perViewErrors[i] = (float) std::sqrt(err * err / n);
@@ -75,7 +81,49 @@ static double computeReprojectionErrors(
     return std::sqrt(totalErr / totalPoints);
 }
 
-static void calcChessboardCorners(Size boardSize, float squareSize, vector<Point3f> &corners,
+// Because the output fundamental matrix implicitly includes all the output information,
+// we can check the quality of calibration using the epipolar geometry constraint: m2^t*F*m1=0
+static double computeAvgEpipolarError(const vector<vector<Point2f> >& image_points_0,
+                                      const vector<vector<Point2f> >& image_points_1,
+                                      const Mat &camera_matrix_0,
+                                      const Mat &camera_matrix_1,
+                                      const Mat &dist_coeffs_0,
+                                      const Mat &dist_coeffs_1,
+                                      const Mat &F) {
+    double err = 0;
+    int num_points = 0;
+    vector<Vec3f> lines[2];
+    for(int i = 0; i < image_points_0.size(); i++ )
+    {
+        int npt = (int)image_points_0[i].size();
+        Mat imgpt[2];
+
+        imgpt[0] = Mat(image_points_0[i]);
+        undistortPoints(imgpt[0], imgpt[0], camera_matrix_0, dist_coeffs_0, Mat(), camera_matrix_0);
+        computeCorrespondEpilines(imgpt[0], 1, F, lines[0]);
+
+        imgpt[1] = Mat(image_points_0[i]);
+        undistortPoints(imgpt[1], imgpt[1], camera_matrix_1, dist_coeffs_1, Mat(), camera_matrix_1);
+        computeCorrespondEpilines(imgpt[1], 2, F, lines[1]);
+
+        for(int j = 0; j < npt; j++ )
+        {
+            double errij = fabs(image_points_0[i][j].x*lines[1][j][0] +
+                                image_points_0[i][j].y*lines[1][j][1] + lines[1][j][2]) +
+                           fabs(image_points_1[i][j].x*lines[0][j][0] +
+                                image_points_1[i][j].y*lines[0][j][1] + lines[0][j][2]);
+            err += errij;
+        }
+        num_points += npt;
+    }
+    double avg_epipolar_error = err / num_points;
+    cout << "average epipolar err = " <<  avg_epipolar_error << endl;
+    return avg_epipolar_error;
+}
+
+static void calcChessboardCorners(Size boardSize,
+                                  float squareSize,
+                                  vector<Point3f> &corners,
                                   Pattern patternType = CHESSBOARD) {
     corners.resize(0);
 
@@ -102,33 +150,48 @@ static void calcChessboardCorners(Size boardSize, float squareSize, vector<Point
 
 static bool runCalibration(vector<vector<Point2f> > image_points_0,
                            vector<vector<Point2f> > image_points_1,
-                           Size imageSize, Size boardSize, Pattern patternType,
-                           float squareSize, float aspectRatio,
-                           int flags, Mat &camera_matrix_0, Mat &camera_matrix_1,
-                           Mat &dist_coeffs_0, Mat &dist_coeffs_1,
-                           vector<Mat> &rvecs, vector<Mat> &tvecs,
-                           vector<float> &reprojErrs,
-                           double &totalAvgErr) {
-    // TODO: Load calibrations from disk
-
-    camera_matrix_0 = Mat::eye(3, 3, CV_64F);
-    camera_matrix_1 = Mat::eye(3, 3, CV_64F);
+                           Size imageSize,
+                           Size boardSize,
+                           Pattern patternType,
+                           float squareSize,
+                           float aspectRatio,
+                           int flags,
+                           Mat &camera_matrix_0,
+                           Mat &camera_matrix_1,
+                           Mat &dist_coeffs_0,
+                           Mat &dist_coeffs_1,
+                           vector<Mat> &rvecs_0,
+                           vector<Mat> &rvecs_1,
+                           vector<Mat> &tvecs_0,
+                           vector<Mat> &tvecs_1,
+                           Mat& R,
+                           Mat& T,
+                           Mat& E,
+                           Mat& F,
+                           vector<float> &reprojErrs_0,
+                           vector<float> &reprojErrs_1,
+                           double &totalAvgErr_0,
+                           double &totalAvgErr_1,
+                           double &avgEpipolarErr) {
+    // TODO: Add switch for loaded calibrations
+//    camera_matrix_0 = Mat::eye(3, 3, CV_64F);
+//    camera_matrix_1 = Mat::eye(3, 3, CV_64F);
     if (flags & CALIB_FIX_ASPECT_RATIO) {
         camera_matrix_0.at<double>(0, 0) = aspectRatio;
         camera_matrix_1.at<double>(0, 0) = aspectRatio;
     }
 
-    dist_coeffs_0 = Mat::zeros(8, 1, CV_64F);
-    dist_coeffs_1 = Mat::zeros(8, 1, CV_64F);
+//    dist_coeffs_0 = Mat::zeros(8, 1, CV_64F);
+//    dist_coeffs_1 = Mat::zeros(8, 1, CV_64F);
 
     vector<vector<Point3f> > objectPoints(1);
     calcChessboardCorners(boardSize, squareSize, objectPoints[0], patternType);
 
     objectPoints.resize(image_points_0.size(), objectPoints[0]);
 
-    Mat R, T, E, F;
+//    Mat R, T, E, F;
 
-    double rms =stereoCalibrate(objectPoints,
+    double rms = stereoCalibrate(objectPoints,
                                 image_points_0,
                                 image_points_1,
                                 camera_matrix_0,
@@ -146,21 +209,55 @@ static bool runCalibration(vector<vector<Point2f> > image_points_0,
 
     bool ok = checkRange(R) && checkRange(T);
 
-    totalAvgErr = computeReprojectionErrors(objectPoints, image_points_0,
-                                            rvecs, tvecs, camera_matrix_0, dist_coeffs_0, reprojErrs);
+//    totalAvgErr_0 = computeReprojectionErrors(objectPoints,
+//                                              image_points_0,
+//                                              rvecs_0, tvecs_0,
+//                                              camera_matrix_0,
+//                                              dist_coeffs_0,
+//                                              reprojErrs_0);
+//
+//    totalAvgErr_1 = computeReprojectionErrors(objectPoints,
+//                                              image_points_1,
+//                                              rvecs_1,
+//                                              tvecs_1,
+//                                              camera_matrix_1,
+//                                              dist_coeffs_1,
+//                                              reprojErrs_1);
 
+    avgEpipolarErr = computeAvgEpipolarError(image_points_0,
+                                             image_points_1,
+                                             camera_matrix_0,
+                                             camera_matrix_1,
+                                             dist_coeffs_0,
+                                             dist_coeffs_1,
+                                             F);
     return ok;
 }
 
 
 static void saveCameraParams(const string &filename,
-                             Size imageSize, Size boardSize,
-                             float squareSize, float aspectRatio, int flags,
-                             const Mat &camera_matrix_0, const Mat & camera_matrix_1,
-                             const Mat &dist_coeffs_0, const Mat & dist_coeffs_1,
-                             const vector<Mat> &rvecs, const vector<Mat> &tvecs,
-                             const vector<float> &reprojErrs,
-                             double totalAvgErr) {
+                             Size imageSize,
+                             Size boardSize,
+                             float squareSize,
+                             float aspectRatio,
+                             int flags,
+                             const Mat &camera_matrix_0,
+                             const Mat & camera_matrix_1,
+                             const Mat &dist_coeffs_0,
+                             const Mat & dist_coeffs_1,
+                             const vector<Mat> &rvecs_0,
+                             const vector<Mat> &rvecs_1,
+                             const vector<Mat> &tvecs_0,
+                             const vector<Mat> &tvecs_1,
+                             const Mat& R,
+                             const Mat& T,
+                             const Mat& E,
+                             const Mat& F,
+                             const vector<float> &reprojErrs_0,
+                             const vector<float> &reprojErrs_1,
+                             double totalAvgErr_0,
+                             double totalAvgErr_1,
+                             double avgEpipolarErr) {
     FileStorage fs(filename, FileStorage::WRITE);
 
     time_t tt;
@@ -171,8 +268,8 @@ static void saveCameraParams(const string &filename,
 
     fs << "calibration_time" << buf;
 
-    if (!rvecs.empty() || !reprojErrs.empty())
-        fs << "nframes" << (int) std::max(rvecs.size(), reprojErrs.size());
+    if (!rvecs_0.empty() || !reprojErrs_0.empty())
+        fs << "nframes" << (int) std::max(rvecs_0.size(), reprojErrs_0.size());
     fs << "image_width" << imageSize.width;
     fs << "image_height" << imageSize.height;
     fs << "board_width" << boardSize.width;
@@ -198,55 +295,131 @@ static void saveCameraParams(const string &filename,
     fs << "distortion_coefficients_1" << dist_coeffs_0;
     fs << "distortion_coefficients_2" << dist_coeffs_1;
 
-    fs << "avg_reprojection_error" << totalAvgErr;
-    if (!reprojErrs.empty())
-        fs << "per_view_reprojection_errors" << Mat(reprojErrs);
+    fs << "avg_reprojection_error_1" << totalAvgErr_0;
+    fs << "avg_reprojection_error_2" << totalAvgErr_1;
 
-    if (!rvecs.empty() && !tvecs.empty()) {
-        CV_Assert(rvecs[0].type() == tvecs[0].type());
-        Mat bigmat((int) rvecs.size(), 6, rvecs[0].type());
-        for (int i = 0; i < (int) rvecs.size(); i++) {
+    if (!reprojErrs_0.empty())
+        fs << "per_view_reprojection_errors_1" << Mat(reprojErrs_0);
+
+    if (!reprojErrs_1.empty())
+        fs << "per_view_reprojection_errors_2" << Mat(reprojErrs_0);
+
+    if (!rvecs_0.empty() && !tvecs_0.empty()) {
+        CV_Assert(rvecs_0[0].type() == tvecs_0[0].type());
+        Mat bigmat((int) rvecs_0.size(), 6, rvecs_0[0].type());
+        for (int i = 0; i < (int) rvecs_0.size(); i++) {
             Mat r = bigmat(Range(i, i + 1), Range(0, 3));
             Mat t = bigmat(Range(i, i + 1), Range(3, 6));
 
-            CV_Assert(rvecs[i].rows == 3 && rvecs[i].cols == 1);
-            CV_Assert(tvecs[i].rows == 3 && tvecs[i].cols == 1);
+            CV_Assert(rvecs_0[i].rows == 3 && rvecs_0[i].cols == 1);
+            CV_Assert(tvecs_0[i].rows == 3 && tvecs_0[i].cols == 1);
             //*.t() is MatExpr (not Mat) so we can use assignment operator
-            r = rvecs[i].t();
-            t = tvecs[i].t();
+            r = rvecs_0[i].t();
+            t = tvecs_0[i].t();
         }
         //cvWriteComment( *fs, "a set of 6-tuples (rotation vector + translation vector) for each view", 0 );
-        fs << "extrinsic_parameters" << bigmat;
+        fs << "extrinsic_parameters_0" << bigmat;
     }
+
+    if (!rvecs_1.empty() && !tvecs_1.empty()) {
+        CV_Assert(rvecs_1[0].type() == tvecs_1[0].type());
+        Mat bigmat((int) rvecs_1.size(), 6, rvecs_1[0].type());
+        for (int i = 0; i < (int) rvecs_1.size(); i++) {
+            Mat r = bigmat(Range(i, i + 1), Range(0, 3));
+            Mat t = bigmat(Range(i, i + 1), Range(3, 6));
+
+            CV_Assert(rvecs_1[i].rows == 3 && rvecs_1[i].cols == 1);
+            CV_Assert(tvecs_1[i].rows == 3 && tvecs_1[i].cols == 1);
+            //*.t() is MatExpr (not Mat) so we can use assignment operator
+            r = rvecs_1[i].t();
+            t = tvecs_1[i].t();
+        }
+        //cvWriteComment( *fs, "a set of 6-tuples (rotation vector + translation vector) for each view", 0 );
+        fs << "extrinsic_parameters_1" << bigmat;
+    }
+
+    fs << "R" << R;
+    fs << "T" << T;
+    fs << "E" << E;
+    fs << "F" << F;
+    fs << "avg_epipolar_error" << avgEpipolarErr;
 }
 
 
 static bool runAndSave(const string &outputFilename,
                        const vector<vector<Point2f> > &image_points_0,
                        const vector<vector<Point2f> > &image_points_1,
-                       Size imageSize, Size boardSize, Pattern patternType, float squareSize,
-                       float aspectRatio, int flags, Mat &camera_matrix_0, Mat &camera_matrix_1,
-                       Mat &dist_coeffs_0, Mat &dist_coeffs_1) {
-    vector<Mat> rvecs, tvecs;
-    vector<float> reprojErrs;
-    double totalAvgErr = 0;
+                       Size imageSize,
+                       Size boardSize,
+                       Pattern patternType,
+                       float squareSize,
+                       float aspectRatio,
+                       int flags,
+                       Mat &camera_matrix_0,
+                       Mat &camera_matrix_1,
+                       Mat &dist_coeffs_0,
+                       Mat &dist_coeffs_1) {
+    vector<Mat> rvecs_0, rvecs_1, tvecs_0, tvecs_1;
+    vector<float> reprojErrs_0, reprojErrs_1;
+    double totalAvgErr_0 = 0;
+    double totalAvgErr_1 = 0;
+    double avgEpipolarErr = 0;
+    Mat R, T, E, F;
 
-    bool ok = runCalibration(image_points_0, image_points_1, imageSize, boardSize, patternType, squareSize,
-                             aspectRatio, flags,
-                             camera_matrix_0, camera_matrix_1, dist_coeffs_0, dist_coeffs_1,
-                             rvecs, tvecs, reprojErrs, totalAvgErr);
-    printf("%s. avg reprojection error = %.2f\n",
+    bool ok = runCalibration(image_points_0,
+                             image_points_1,
+                             imageSize,
+                             boardSize,
+                             patternType,
+                             squareSize,
+                             aspectRatio,
+                             flags,
+                             camera_matrix_0,
+                             camera_matrix_1,
+                             dist_coeffs_0,
+                             dist_coeffs_1,
+                             rvecs_0,
+                             rvecs_1,
+                             tvecs_0,
+                             tvecs_1,
+                             R,
+                             T,
+                             E,
+                             F,
+                             reprojErrs_0,
+                             reprojErrs_1,
+                             totalAvgErr_0,
+                             totalAvgErr_1,
+                             avgEpipolarErr);
+
+    printf("%s. avg epipolar error = %.2f\n",
            ok ? "Calibration succeeded" : "Calibration failed",
-           totalAvgErr);
+           avgEpipolarErr);
 
     if (ok)
-        saveCameraParams(outputFilename, imageSize,
-                         boardSize, squareSize, aspectRatio,
-                         flags, camera_matrix_0, camera_matrix_1, dist_coeffs_0, dist_coeffs_1,
-                         rvecs,
-                         tvecs,
-                         reprojErrs,
-                         totalAvgErr);
+        saveCameraParams(outputFilename,
+                         imageSize,
+                         boardSize,
+                         squareSize,
+                         aspectRatio,
+                         flags,
+                         camera_matrix_0,
+                         camera_matrix_1,
+                         dist_coeffs_0,
+                         dist_coeffs_1,
+                         rvecs_0,
+                         rvecs_1,
+                         tvecs_0,
+                         tvecs_1,
+                         R,
+                         T,
+                         E,
+                         F,
+                         reprojErrs_0,
+                         reprojErrs_1,
+                         totalAvgErr_0,
+                         totalAvgErr_1,
+                         avgEpipolarErr);
     return ok;
 }
 
@@ -423,6 +596,7 @@ int main(int argc, const char *const *argv) {
 
         if (mode == CAPTURING && found && (clock() - prevTimestamp > delay * 1e-3 * CLOCKS_PER_SEC) ) {
             image_points_0.push_back(point_buff_0);
+            image_points_1.push_back(point_buff_1);
             prevTimestamp = clock();
             blink = capture_0.isOpened() && capture_1.isOpened();
         }
